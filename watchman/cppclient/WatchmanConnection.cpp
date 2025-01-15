@@ -14,10 +14,10 @@
 #include <folly/ExceptionWrapper.h>
 #include <folly/SocketAddress.h>
 #include <folly/executors/InlineExecutor.h>
-#include <folly/experimental/bser/Bser.h>
+#include <folly/json/bser/Bser.h>
 
 #ifdef _WIN32
-#include <eden/fs/utils/SpawnedProcess.h> // @manual
+#include <eden/common/utils/SpawnedProcess.h> // @manual
 #else
 #include <folly/Subprocess.h> // @manual
 #endif

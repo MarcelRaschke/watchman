@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import os
 
@@ -46,7 +48,9 @@ class TestPathGenerator(WatchmanTestCase.WatchmanTestCase):
 
             self.assertFileListsEqual(
                 self.watchmanCommand(
-                    "query", root, {"fields": ["name"], "path": ["foo"]}  # not Foo!
+                    "query",
+                    root,
+                    {"fields": ["name"], "path": ["foo"]},  # not Foo!
                 )["files"],
                 [],
                 message="Case insensitive matching not implemented \
@@ -87,7 +91,9 @@ class TestPathGenerator(WatchmanTestCase.WatchmanTestCase):
 
             self.assertFileListsEqual(
                 self.watchmanCommand(
-                    "query", root, {"fields": ["name"], "path": ["foo"]}  # not Foo!
+                    "query",
+                    root,
+                    {"fields": ["name"], "path": ["foo"]},  # not Foo!
                 )["files"],
                 [],
                 message="Case insensitive matching not implemented \

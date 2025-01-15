@@ -7,6 +7,7 @@
 
 #include <cpptoml.h>
 #include <fmt/core.h>
+#include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <folly/futures/Future.h>
 #include <folly/io/async/AsyncSocket.h>
@@ -22,6 +23,7 @@
 #include <chrono>
 #include <iterator>
 #include <thread>
+#include "eden/common/utils/FSDetect.h"
 #include "eden/fs/service/gen-cpp2/StreamingEdenService.h"
 #include "watchman/ChildProcess.h"
 #include "watchman/Errors.h"
@@ -142,11 +144,27 @@ std::string resolveSocketPath(w_string_piece rootPath) {
 
   return *config->get_qualified_as<std::string>("Config.socket");
 #else
-  auto path = fmt::format("{}/.eden/socket", rootPath);
-  // It is important to resolve the link because the path in the eden mount
-  // may exceed the maximum permitted unix domain socket path length.
-  // This is actually how things our in our integration test environment.
-  return readSymbolicLink(path.c_str()).string();
+  try {
+    auto path = fmt::format("{}/.eden/socket", rootPath);
+    // It is important to resolve the link because the path in the eden mount
+    // may exceed the maximum permitted unix domain socket path length.
+    // This is actually how things our in our integration test environment.
+    return readSymbolicLink(path.c_str()).string();
+  } catch (const std::system_error& e) {
+    // When Eden fails during graceful takeover, the mount can exist, but it
+    // is disconnected. In this case, we can't use the eden watcher. Log this
+    // error and return no address - this will result makeThriftChannel failing
+    // with an AsyncSocketException.
+    log(DBG,
+        fmt::format(
+            "Failed to read EdenFS root when mount exists: {} ."
+            "{} appears to be a disconnected EdenFS mount. "
+            "Try running `eden doctor` to bring it back online and "
+            "then retry your watch.",
+            e.what(),
+            rootPath));
+    return std::string();
+  }
 #endif
 }
 
@@ -595,13 +613,18 @@ static std::string escapeGlobSpecialChars(w_string_piece str) {
  * We need to respect the ignore_dirs configuration setting and
  * also remove anything that doesn't match the relative_root constraint
  * in the query. */
-void filterOutPaths(std::vector<NameAndDType>& files, QueryContext* ctx) {
+void filterOutPaths(
+    std::vector<NameAndDType>& files,
+    QueryContext* ctx,
+    const std::string& relative_root = "") {
   files.erase(
       std::remove_if(
           files.begin(),
           files.end(),
-          [ctx](const NameAndDType& item) {
-            auto full = w_string::pathCat({ctx->root->root_path, item.name});
+          [ctx, relative_root](const NameAndDType& item) {
+            w_string full;
+            full = w_string::pathCat(
+                {ctx->root->root_path, relative_root, item.name});
 
             if (!ctx->fileMatchesRelativeRoot(full)) {
               // Not in the desired area, so filter it out
@@ -636,7 +659,9 @@ std::vector<NameAndDType> globNameAndDType(
     const std::string& mountPoint,
     const std::vector<std::string>& globPatterns,
     bool includeDotfiles,
-    bool splitGlobPattern = false) {
+    bool splitGlobPattern = false,
+    bool listOnlyFiles = false,
+    const std::string& relative_root = "") {
   // TODO(xavierd): Once the config: "eden_split_glob_pattern" is rolled out
   // everywhere, remove this code.
   if (splitGlobPattern && globPatterns.size() > 1) {
@@ -651,7 +676,9 @@ std::vector<NameAndDType> globNameAndDType(
       params.globs() = std::vector<std::string>{globPattern};
       params.includeDotfiles() = includeDotfiles;
       params.wantDtype() = true;
+      params.listOnlyFiles() = listOnlyFiles;
       params.sync() = getSyncBehavior();
+      params.searchRoot() = relative_root;
 
       globFutures.emplace_back(
           client->semifuture_globFiles(params).via(executor));
@@ -669,7 +696,9 @@ std::vector<NameAndDType> globNameAndDType(
     params.globs() = globPatterns;
     params.includeDotfiles() = includeDotfiles;
     params.wantDtype() = true;
+    params.listOnlyFiles() = listOnlyFiles;
     params.sync() = getSyncBehavior();
+    params.searchRoot() = relative_root;
 
     Glob glob;
     try {
@@ -680,7 +709,7 @@ std::vector<NameAndDType> globNameAndDType(
           "Thrift exception raised from EdenFS when globbing files: {} (errno {}, type {})\n",
           ex.what(),
           ex.getErrno(),
-          ex.getType());
+          fmt::underlying(ex.getType()));
       throw;
     } catch (const std::exception& ex) {
       logf(
@@ -846,24 +875,35 @@ class EdenView final : public QueryableView {
       const std::vector<std::string>& globStrings,
       QueryContext* ctx,
       bool includeDotfiles,
-      bool includeDir = true) const {
+      bool includeDir = true,
+      const std::string& relative_root = "") const {
     auto client = getEdenClient(thriftChannel_);
 
+    bool listOnlyFiles = false;
+    if (ctx->query->expr) {
+      listOnlyFiles =
+          ctx->query->expr->listOnlyFiles() == QueryExpr::ReturnOnlyFiles::Yes;
+    }
+    folly::stop_watch<std::chrono::microseconds> timer;
     auto fileInfo = globNameAndDType(
         client.get(),
         mountPoint_,
         globStrings,
         includeDotfiles,
-        splitGlobPattern_);
+        splitGlobPattern_,
+        listOnlyFiles,
+        relative_root);
+    ctx->edenGlobFilesDurationUs.store(
+        timer.elapsed().count(), std::memory_order_relaxed);
 
     // Filter out any ignored files
-    filterOutPaths(fileInfo, ctx);
+    filterOutPaths(fileInfo, ctx, relative_root);
 
     for (auto& item : fileInfo) {
       auto file = make_unique<EdenFileResult>(
           rootPath_,
           thriftChannel_,
-          w_string::pathCat({mountPoint_, item.name}),
+          w_string::pathCat({mountPoint_, relative_root, item.name}),
           /*ticks=*/nullptr,
           /*isNew=*/false,
           item.dtype);
@@ -967,8 +1007,23 @@ class EdenView final : public QueryableView {
 
   void allFilesGenerator(const Query*, QueryContext* ctx) const override {
     ctx->generationStarted();
-    auto globPatterns = getGlobPatternsForAllFiles(ctx);
-    executeGlobBasedQuery(globPatterns, ctx, /*includeDotfiles=*/true);
+    std::string relative_root = "";
+    std::vector<std::string> globPatterns;
+    bool includeDir = true;
+    if (isSimpleSuffixQuery(ctx)) {
+      globPatterns = getSuffixQueryGlobPatterns(ctx);
+      relative_root = getSuffixQueryRelativeRoot(ctx);
+      includeDir = false;
+    } else {
+      globPatterns = getGlobPatternsForAllFiles(ctx);
+    }
+
+    executeGlobBasedQuery(
+        globPatterns,
+        ctx,
+        /*includeDotfiles=*/true,
+        includeDir,
+        relative_root);
   }
 
   ClockPosition getMostRecentRootNumberAndTickValue() const override {
@@ -994,7 +1049,7 @@ class EdenView final : public QueryableView {
     thr.detach();
   }
 
-  void stopThreads() override {
+  void stopThreads(std::string_view /*reason*/) override {
     subscriberEventBase_.terminateLoopSoon();
   }
 
@@ -1069,7 +1124,7 @@ class EdenView final : public QueryableView {
     SCOPE_EXIT {
       // ensure that the root gets torn down,
       // otherwise we'd leave it in a broken state.
-      root->cancel();
+      root->cancel("eden subscriber thread exiting");
     };
 
     w_set_thread_name("edensub ", root->root_path.view());
@@ -1161,6 +1216,26 @@ class EdenView final : public QueryableView {
     return globPatterns;
   }
 
+  bool isSimpleSuffixQuery(QueryContext* ctx) const {
+    // Checks if this query expression is a simple suffix query.
+    // A simple suffix query is an allof expression that only contains
+    //   1. Type = f
+    //   2. Suffix
+    if (ctx->query->expr) {
+      return ctx->query->expr->evaluateSimpleSuffix() ==
+          SimpleSuffixType::IsSimpleSuffix;
+    }
+    return false;
+  }
+
+  std::vector<std::string> getSuffixQueryGlobPatterns(QueryContext* ctx) const {
+    return ctx->query->expr->getSuffixQueryGlobPatterns();
+  }
+
+  std::string getSuffixQueryRelativeRoot(QueryContext* ctx) const {
+    return computeRelativePathPiece(ctx).string();
+  }
+
   /**
    * Returns all the files in the watched directory for a fresh instance.
    *
@@ -1173,8 +1248,14 @@ class EdenView final : public QueryableView {
       // Avoid a full tree walk if we don't need it!
       return std::vector<NameAndDType>();
     }
-
-    auto globPatterns = getGlobPatternsForAllFiles(ctx);
+    std::string relative_root = "";
+    std::vector<std::string> globPatterns;
+    if (isSimpleSuffixQuery(ctx)) {
+      globPatterns = getSuffixQueryGlobPatterns(ctx);
+      relative_root = getSuffixQueryRelativeRoot(ctx);
+    } else {
+      globPatterns = getGlobPatternsForAllFiles(ctx);
+    }
 
     auto client = getEdenClient(thriftChannel_);
     return globNameAndDType(
@@ -1182,7 +1263,9 @@ class EdenView final : public QueryableView {
         mountPoint_,
         std::move(globPatterns),
         /*includeDotfiles=*/true,
-        splitGlobPattern_);
+        splitGlobPattern_,
+        /*listOnlyFiles=*/false,
+        relative_root);
   }
 
   struct GetAllChangesSinceResult {
@@ -1322,6 +1405,11 @@ class EdenView final : public QueryableView {
       // return a list of all possible matching files.
       return makeFreshInstance(ctx);
     }
+    folly::stop_watch<std::chrono::microseconds> timer;
+    SCOPE_EXIT {
+      ctx->edenChangedFilesDurationUs.store(
+          timer.elapsed().count(), std::memory_order_relaxed);
+    };
 
     try {
       return getAllChangesSinceStreaming(ctx);
@@ -1444,9 +1532,9 @@ std::shared_ptr<QueryableView> detectEden(
   }
 
 #else
-  if (!is_edenfs_fs_type(fstype) && fstype != "fuse" &&
+  if (!facebook::eden::is_edenfs_fs_type(fstype.string()) && fstype != "fuse" &&
       fstype != "osxfuse_eden" && fstype != "macfuse_eden" &&
-      fstype != "edenfs_eden") {
+      fstype != "edenfs_eden" && fstype != "fuse.edenfs") {
     // Not an active EdenFS mount.  Perhaps it isn't mounted yet?
     auto readme = fmt::format("{}/README_EDEN.txt", root_path);
     try {
@@ -1474,8 +1562,21 @@ std::shared_ptr<QueryableView> detectEden(
   }
 
   // Given that the readlink() succeeded, assume this is an Eden mount.
-  auto edenRoot =
-      readSymbolicLink(fmt::format("{}/.eden/root", root_path).c_str());
+  w_string edenRoot;
+  try {
+    edenRoot =
+        readSymbolicLink(fmt::format("{}/.eden/root", root_path).c_str());
+  } catch (const std::system_error& e) {
+    // When Eden fails during graceful takeover, the mount can exist, but it
+    // is disconnected. In this case, we can't use the eden watcher. Log this
+    // error and throw.
+    log(DBG, "Failed to read EdenFS root when mount exists: ", e.what());
+    RootNotConnectedError::throwf(
+        "{} appears to be a disconnected EdenFS mount. "
+        "Try running `eden doctor` to bring it back online and "
+        "then retry your watch",
+        root_path);
+  }
 
 #endif
   if (edenRoot != root_path) {

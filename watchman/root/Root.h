@@ -9,11 +9,13 @@
 
 #include <memory>
 #include <unordered_map>
+
 #include "watchman/Clock.h"
 #include "watchman/CookieSync.h"
 #include "watchman/IgnoreSet.h"
 #include "watchman/PendingCollection.h"
 #include "watchman/PubSub.h"
+#include "watchman/QueryableView.h"
 #include "watchman/Serde.h"
 #include "watchman/WatchmanConfig.h"
 #include "watchman/fs/FileSystem.h"
@@ -30,7 +32,8 @@ class Root;
 struct TriggerCommand;
 class QueryableView;
 struct QueryContext;
-class PerfSample;
+struct RootMetadata;
+struct ClientContext;
 
 enum ClientStateDisposition {
   PendingEnter,
@@ -155,8 +158,9 @@ struct RootQueryInfo : serde::Object {
     x("state", state);
     x("client-pid", client_pid);
     x("request-id", request_id);
-    x.skip_if(
-        "query", query, [](const auto& query) { return !query.has_value(); });
+    x.skip_if("query", query, [](const auto& query_2) {
+      return !query_2.has_value();
+    });
   }
 };
 
@@ -323,27 +327,30 @@ class Root : public RootConfig, public std::enable_shared_from_this<Root> {
   void performAgeOut(std::chrono::seconds min_age);
   folly::SemiFuture<folly::Unit> waitForSettle(
       std::chrono::milliseconds settle_period);
-  CookieSync::SyncResult syncToNow(std::chrono::milliseconds timeout);
+  CookieSync::SyncResult syncToNow(
+      std::chrono::milliseconds timeout,
+      const ClientContext& client_info);
   void scheduleRecrawl(const char* why);
   void recrawlTriggered(const char* why);
 
   // Requests cancellation of the root.
   // Returns true if this request caused the root cancellation, false
   // if it was already in the process of being cancelled.
-  bool cancel();
+  bool cancel(std::string_view reason);
 
   // Returns true if the caller should stop the watch.
   bool considerReap();
   bool removeFromWatched();
-  void stopThreads();
-  bool stopWatch();
+  void stopThreads(std::string_view reason);
+  bool stopWatch(std::string_view reason);
   json_ref triggerListToJson() const;
 
   static std::vector<RootDebugStatus> getStatusForAllRoots();
   RootDebugStatus getStatus() const;
 
-  // Annotate the sample with some standard metadata taken from a root.
-  void addPerfSampleMetadata(PerfSample& sample) const;
+  // Collect standard metadata taken from a root.
+  RootMetadata getRootMetadata() const;
+  void collectRootMetadata(RootMetadata& rootMetadata) const;
 
   SaveGlobalStateHook getSaveGlobalStateHook() const {
     return saveGlobalStateHook_;

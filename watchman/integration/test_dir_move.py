@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import os
 import os.path
@@ -15,7 +17,6 @@ from watchman.integration.lib import WatchmanTestCase
 
 @WatchmanTestCase.expand_matrix
 class TestDirMove(WatchmanTestCase.WatchmanTestCase):
-
     # testing this is flaky at best on windows due to latency
     # and exclusivity of file handles, so skip it.
     def checkOSApplicability(self) -> None:

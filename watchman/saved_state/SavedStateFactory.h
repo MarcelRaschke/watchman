@@ -13,9 +13,10 @@
 
 namespace watchman {
 
-class PerfSample;
+struct RootMetadata;
 class SCM;
 class SavedStateInterface;
+struct ClientContext;
 
 /**
  * Returns an appropriate SavedStateInterface implementation for the
@@ -29,6 +30,7 @@ std::unique_ptr<SavedStateInterface> getInterface(
     const json_ref& savedStateConfig,
     const SCM* scm,
     Configuration config,
-    std::function<void(PerfSample&)> extraSampleMetadata);
+    std::function<void(RootMetadata&)> collectRootMetadata,
+    ClientContext clientInfo);
 
 } // namespace watchman

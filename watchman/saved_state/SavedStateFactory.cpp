@@ -6,7 +6,9 @@
  */
 
 #include "watchman/saved_state/SavedStateFactory.h"
+#include "watchman/ClientContext.h"
 #include "watchman/Errors.h"
+#include "watchman/root/Root.h"
 #include "watchman/saved_state/LocalSavedStateInterface.h"
 
 #if HAVE_MANIFOLD
@@ -19,17 +21,17 @@ std::unique_ptr<SavedStateInterface> getInterface(
     w_string_piece storageType,
     const json_ref& savedStateConfig,
     const SCM* scm,
-    Configuration config,
-    std::function<void(PerfSample&)> extraSampleMetadata) {
-  unused_parameter(config);
-  unused_parameter(extraSampleMetadata);
+    [[maybe_unused]] Configuration config,
+    [[maybe_unused]] std::function<void(RootMetadata&)> collectRootMetadata,
+    [[maybe_unused]] ClientContext clientInfo) {
 #if HAVE_MANIFOLD
   if (storageType == "manifold") {
     return std::make_unique<ManifoldSavedStateInterface>(
         savedStateConfig,
         scm,
         std::move(config),
-        std::move(extraSampleMetadata));
+        std::move(collectRootMetadata),
+        std::move(clientInfo));
   }
 #endif
   if (storageType == "local") {

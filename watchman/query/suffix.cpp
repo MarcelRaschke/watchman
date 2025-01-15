@@ -96,6 +96,23 @@ class SuffixExpr : public QueryExpr {
     // it as unbounded.
     return std::nullopt;
   }
+
+  ReturnOnlyFiles listOnlyFiles() const override {
+    return ReturnOnlyFiles::Unrelated;
+  }
+
+  SimpleSuffixType evaluateSimpleSuffix() const override {
+    return SimpleSuffixType::Suffix;
+  }
+
+  std::vector<std::string> getSuffixQueryGlobPatterns() const override {
+    std::vector<std::string> patterns;
+    for (const auto& suffix : suffixSet_) {
+      patterns.push_back("**/*." + suffix.string());
+    }
+
+    return patterns;
+  }
 };
 W_TERM_PARSER(suffix, SuffixExpr::parse);
 W_CAP_REG("suffix-set")

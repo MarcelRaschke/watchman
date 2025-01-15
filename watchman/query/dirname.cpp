@@ -174,6 +174,18 @@ class DirNameExpr : public QueryExpr {
 
     return std::vector<std::string>{outputPattern.string() + "/**"};
   }
+
+  ReturnOnlyFiles listOnlyFiles() const override {
+    return ReturnOnlyFiles::Unrelated;
+  }
+
+  SimpleSuffixType evaluateSimpleSuffix() const override {
+    return SimpleSuffixType::Excluded;
+  }
+
+  std::vector<std::string> getSuffixQueryGlobPatterns() const override {
+    return std::vector<std::string>{};
+  }
 };
 
 W_TERM_PARSER(dirname, DirNameExpr::parseDirName);

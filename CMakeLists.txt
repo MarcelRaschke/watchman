@@ -12,7 +12,17 @@ set(CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/build/fbcode_builder/CMake"
   ${CMAKE_MODULE_PATH})
 
-set(CMAKE_CXX_STANDARD 17)
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  message(STATUS "setting C++ standard to C++${CMAKE_CXX_STANDARD}")
+endif()
+
+# Explicitly enable coroutine support, since GCC does not enable it
+# by default when targeting C++17.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fcoroutines>)
+endif()
 
 if (WIN32)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DWIN32_LEAN_AND_MEAN -DNOMINMAX -DSTRICT")
@@ -395,17 +405,20 @@ endif()
 
 
 if(Python3_Development_FOUND)
-  set(PYOUT "${CMAKE_CURRENT_BINARY_DIR}/build/pytimestamp")
+  set(PYOUT "${CMAKE_CURRENT_BINARY_DIR}/pywatchman")
   set(SETUP_PY "${CMAKE_CURRENT_SOURCE_DIR}/watchman/python/setup.py")
+  set(PYWATCHMAN_BASE ${CMAKE_CURRENT_SOURCE_DIR}/watchman/python)
   file(GLOB PYWATCHMAN_PY_SRCS "watchman/python/pywatchman/*.py")
+  file(MAKE_DIRECTORY ${PYOUT})
   add_custom_command(
     COMMENT "Building pywatchman"
     OUTPUT ${PYOUT}
     DEPENDS ${PYWATCHMAN_PY_SRCS} "watchman/python/pywatchman/bser.c"
+    WORKING_DIRECTORY ${PYWATCHMAN_BASE}
     COMMAND ${CMAKE_COMMAND} -E env
       CMAKE_CURRENT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
       CMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
-      ${Python3_EXECUTABLE} ${SETUP_PY} build
+      ${Python3_EXECUTABLE} ${SETUP_PY} build --build-base ${PYOUT}
     COMMAND ${CMAKE_COMMAND} -E touch ${PYOUT}
   )
   add_custom_target(pybuild ALL DEPENDS ${PYOUT})
@@ -415,6 +428,7 @@ if(Python3_Development_FOUND)
         CMAKE_CURRENT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         ${Python3_EXECUTABLE} ${SETUP_PY} install
         --root $ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}
+      WORKING_DIRECTORY ${PYWATCHMAN_BASE}
       RESULT_VARIABLE STATUS)
     if (NOT STATUS STREQUAL 0)
       message(FATAL_ERROR \"pywatchman install failed\")
@@ -458,8 +472,10 @@ target_link_libraries(third_party_deps INTERFACE
   glog::glog
   gflags
   ${Boost_LIBRARIES}
+  fb303::fb303
   fmt::fmt
   edencommon::edencommon_utils
+  edencommon::edencommon_telemetry
 )
 target_include_directories(third_party_deps INTERFACE
   ${FOLLY_INCLUDE_DIR}
@@ -605,6 +621,7 @@ watchman/PerfSample.cpp
 watchman/fs/ParallelWalk.cpp
 watchman/fs/Pipe.cpp
 watchman/ProcessLock.cpp
+watchman/ProcessUtil.cpp
 # PubSub.cpp  (in liblog)
 watchman/QueryableView.cpp
 watchman/SanityCheck.cpp
@@ -683,6 +700,9 @@ watchman/saved_state/SavedStateInterface.cpp
 watchman/scm/Git.cpp
 watchman/scm/Mercurial.cpp
 watchman/scm/SCM.cpp
+watchman/telemetry/LogEvent.cpp
+watchman/telemetry/WatchmanStats.cpp
+watchman/telemetry/WatchmanStructuredLogger.cpp
 watchman/thirdparty/getopt/GetOpt.cpp
 watchman/watcher/Watcher.cpp
 watchman/watcher/WatcherRegistry.cpp
@@ -744,7 +764,7 @@ function(t_test NAME)
   )
   target_compile_definitions(${NAME}.t
     PUBLIC WATCHMAN_TEST_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\")
-  gtest_discover_tests(${NAME}.t)
+  gtest_discover_tests(${NAME}.t DISCOVERY_TIMEOUT 60)
   list(APPEND tests ${NAME}.t)
 endfunction()
 
@@ -756,6 +776,7 @@ add_custom_target(check
 if(Python3_Interpreter_FOUND)
   if (WIN32)
     add_executable(susres watchman/winbuild/susres.cpp)
+    target_link_libraries(susres third_party_deps)
     add_custom_target(make_susres ALL DEPENDS susres)
   endif()
 

@@ -164,7 +164,11 @@ class InMemoryView final : public QueryableView {
     };
   }
 
-  void ageOut(PerfSample& sample, std::chrono::seconds minAge) override;
+  void ageOut(
+      int64_t& walked,
+      int64_t& files,
+      int64_t& dirs,
+      std::chrono::seconds minAge) override;
 
   folly::SemiFuture<folly::Unit> waitForSettle(
       std::chrono::milliseconds settle_period) override;
@@ -203,7 +207,7 @@ class InMemoryView final : public QueryableView {
   folly::SemiFuture<folly::Unit> waitUntilReadyToQuery() override;
 
   void startThreads(const std::shared_ptr<Root>& root) override;
-  void stopThreads() override;
+  void stopThreads(std::string_view reason) override;
   void wakeThreads() override;
   void clientModeCrawl(const std::shared_ptr<Root>& root);
 

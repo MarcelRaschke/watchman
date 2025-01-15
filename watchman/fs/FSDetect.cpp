@@ -8,6 +8,7 @@
 #include "watchman/fs/FSDetect.h"
 #include <folly/FileUtil.h>
 #include <folly/String.h>
+#include "eden/common/utils/FSDetect.h"
 #include "watchman/fs/FileDescriptor.h"
 #include "watchman/watchman_system.h"
 
@@ -31,15 +32,13 @@ using namespace watchman;
 
 namespace watchman {
 
-CaseSensitivity getCaseSensitivityForPath(const char* path) {
+CaseSensitivity getCaseSensitivityForPath([[maybe_unused]] const char* path) {
 #ifdef __APPLE__
   return pathconf(path, _PC_CASE_SENSITIVE) ? CaseSensitivity::CaseSensitive
                                             : CaseSensitivity::CaseInSensitive;
 #elif defined(_WIN32)
-  unused_parameter(path);
   return CaseSensitivity::CaseInSensitive;
 #else
-  unused_parameter(path);
   return CaseSensitivity::CaseSensitive;
 #endif
 }
@@ -76,8 +75,8 @@ std::optional<w_string> find_fstype_in_linux_proc_mounts(
           // This is a better match than any prior mount point
           bestMountPoint = mountPoint;
 
-          if (vfstype == "fuse") {
-            // For example: edenfs registers with fstype "fuse"
+          if (vfstype == "fuse" || vfstype == "fuse.edenfs") {
+            // For example: edenfs registers with fstype "fuse" or "fuse.edenfs"
             // and device "edenfs", so we take the device node
             // as the filesystem type
             bestVfsType = device;
@@ -86,7 +85,7 @@ std::optional<w_string> find_fstype_in_linux_proc_mounts(
             // device name. In general, we don't want watchman to be used
             // over nfs, so in all cases except eden we still use "nfs"
             // as the type.
-            if (is_edenfs_fs_type(device)) {
+            if (facebook::eden::is_edenfs_fs_type(device)) {
               bestVfsType = device;
             } else {
               bestVfsType = vfstype;
@@ -110,7 +109,8 @@ std::optional<w_string> find_fstype_in_linux_proc_mounts(
 }
 
 w_string w_fstype_detect_macos_nfs(w_string fstype, w_string edenfs_indicator) {
-  if (fstype == "nfs" && is_edenfs_fs_type(edenfs_indicator)) {
+  if (fstype == "nfs" &&
+      facebook::eden::is_edenfs_fs_type(edenfs_indicator.string())) {
     return edenfs_indicator;
   }
   return fstype;
@@ -122,7 +122,7 @@ w_string w_fstype_detect_macos_nfs(w_string fstype, w_string edenfs_indicator) {
 // need to have a fully comprehensive mapping of the underlying filesystem
 // type codes to names, just the known problematic types
 
-w_string w_fstype(const char* path) {
+w_string w_fstype([[maybe_unused]] const char* path) {
 #ifdef __linux__
   // If possible, we prefer to read the filesystem type names from
   // `/proc/self/mounts`
@@ -213,7 +213,6 @@ w_string w_fstype(const char* path) {
   }
   return w_string("unknown", W_STRING_UNICODE);
 #else
-  unused_parameter(path);
   return w_string("unknown", W_STRING_UNICODE);
 #endif
 }

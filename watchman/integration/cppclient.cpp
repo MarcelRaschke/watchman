@@ -13,11 +13,11 @@
 #include <mutex>
 #include <thread>
 
-#include <folly/experimental/TestUtil.h>
 #include <folly/experimental/io/FsUtil.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/EventBaseThread.h>
-#include <folly/json.h>
+#include <folly/json/json.h>
+#include <folly/testing/TestUtil.h>
 #include <glog/logging.h>
 
 using namespace folly;
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     auto empty_file_relative_path =
         fs::relative(empty_file_path, subdir.path());
     {
-      auto empty_file = fs::ofstream{empty_file_path};
+      auto empty_file = std::ofstream{empty_file_path};
       if (!empty_file) {
         LOG(ERROR) << "Failed to create " << empty_file_path;
         return 1;

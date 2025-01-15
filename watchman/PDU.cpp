@@ -379,8 +379,6 @@ bool PduBuffer::streamN(
     watchman_stream* stm,
     json_int_t len,
     json_error_t* jerr) {
-  uint32_t total = 0;
-
   if (!output_bytes(buf, rpos)) {
     snprintf(
         jerr->text,
@@ -426,7 +424,6 @@ bool PduBuffer::streamN(
       return false;
     }
     wpos += r;
-    total += r;
   }
   return true;
 }
@@ -584,18 +581,18 @@ ResultErrno<folly::Unit> PduBuffer::jsonEncodeToStream(
 }
 
 ResultErrno<folly::Unit> PduBuffer::pduEncodeToStream(
-    PduFormat format,
+    PduFormat format_2,
     const json_ref& json,
     watchman_stream* stm) {
-  switch (format.type) {
+  switch (format_2.type) {
     case is_json_compact:
       return jsonEncodeToStream(json, stm, JSON_COMPACT);
     case is_json_pretty:
       return jsonEncodeToStream(json, stm, JSON_INDENT(4));
     case is_bser:
-      return bserEncodeToStream(1, format.capabilities, json, stm);
+      return bserEncodeToStream(1, format_2.capabilities, json, stm);
     case is_bser_v2:
-      return bserEncodeToStream(2, format.capabilities, json, stm);
+      return bserEncodeToStream(2, format_2.capabilities, json, stm);
     case need_data:
     default:
       return EINVAL;

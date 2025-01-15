@@ -34,6 +34,11 @@ enum json_type : char {
   JSON_NULL
 };
 
+// Required for fmt 10
+inline char format_as(json_type type) {
+  return static_cast<char>(type);
+}
+
 struct json_t {
   json_type type;
   std::atomic<size_t> refcount;
@@ -203,6 +208,11 @@ class json_ref {
    * A more efficient method would return a nullable pointer.
    */
   std::optional<w_string> asOptionalString() const;
+
+  /**
+   * Converts to a JSON formatted string.
+   */
+  std::string toString() const;
 
   const char* asCString() const;
   bool asBool() const;

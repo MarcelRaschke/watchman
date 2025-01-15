@@ -157,7 +157,8 @@ void WinWatcher::readChangesThread(const std::shared_ptr<Root>& root) {
           ERR,
           "ReadDirectoryChangesW: failed, cancel watch. {}\n",
           win32_strerror(err));
-      root->cancel();
+      root->cancel(
+          fmt::format("ReadDirectoryChangesW failed: {}", win32_strerror(err)));
       return;
     }
     // Signal that we are done with init.  We MUST do this AFTER our first
@@ -188,7 +189,8 @@ void WinWatcher::readChangesThread(const std::shared_ptr<Root>& root) {
             ERR,
             "ReadDirectoryChangesW: failed, cancel watch. {}\n",
             win32_strerror(err));
-        root->cancel();
+        root->cancel(fmt::format(
+            "ReadDirectoryChangesW failed: {}", win32_strerror(err)));
         break;
       } else {
         initiate_read = false;
@@ -236,20 +238,21 @@ void WinWatcher::readChangesThread(const std::shared_ptr<Root>& root) {
         }
 
         if (err == ERROR_NOTIFY_ENUM_DIR) {
-          logf(
-              ERR,
-              "GetOverlappedResult failed with ERROR_NOTIFY_ENUM_DIR, recrawling.\n");
+          root->recrawlTriggered(
+              "GetOverlappedResult failed with ERROR_NOTIFY_ENUM_DIR");
           items.emplace_back(
               w_string{root->root_path},
               PendingFlags{W_PENDING_IS_DESYNCED | W_PENDING_RECURSIVE});
         } else {
           logf(ERR, "Cancelling watch for {}\n", root->root_path);
-          root->cancel();
+          root->cancel(fmt::format(
+              "unexpected error from GetOverlappedResult: {}",
+              win32_strerror(err)));
           break;
         }
       } else {
         if (bytes == 0) {
-          logf(ERR, "ReadDirectoryChangesW overflowed, recrawling.\n");
+          root->recrawlTriggered("ReadDirectoryChangesW overflowed");
           items.emplace_back(
               w_string{root->root_path},
               PendingFlags{W_PENDING_IS_DESYNCED | W_PENDING_RECURSIVE});
@@ -299,8 +302,8 @@ void WinWatcher::readChangesThread(const std::shared_ptr<Root>& root) {
             if (notify->NextEntryOffset == 0) {
               break;
             }
-            notify =
-                (PFILE_NOTIFY_INFORMATION)(notify->NextEntryOffset + (char*)notify);
+            notify = (PFILE_NOTIFY_INFORMATION)(notify->NextEntryOffset +
+                                                (char*)notify);
           }
         }
 
@@ -344,7 +347,7 @@ bool WinWatcher::start(const std::shared_ptr<Root>& root) {
         self->readChangesThread(root);
       } catch (const std::exception& e) {
         watchman::log(watchman::ERR, "uncaught exception: ", e.what());
-        root->cancel();
+        root->cancel(fmt::format("readChangesThread errored: {}", e.what()));
       }
 
       // Ensure that we signal the condition variable before we
@@ -363,7 +366,7 @@ bool WinWatcher::start(const std::shared_ptr<Root>& root) {
         std::cv_status::timeout) {
       watchman::log(
           watchman::ERR, "timedout waiting for readChangesThread to start\n");
-      root->cancel();
+      root->cancel("timedout waiting for readChangesThread to start");
       return false;
     }
 

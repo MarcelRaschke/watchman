@@ -21,7 +21,7 @@ void ClockSpec::init() {
   struct timeval tv;
 
   proc_pid = (int)::getpid();
-  if (gettimeofday(&tv, NULL) == -1) {
+  if (gettimeofday(&tv, nullptr) == -1) {
     logf(FATAL, "gettimeofday failed: {}\n", folly::errnoStr(errno));
   }
   proc_start_time = (uint64_t)tv.tv_sec;
@@ -106,8 +106,8 @@ ClockSpec::ClockSpec(const json_ref& value) {
       /* fall through to default case and throw error.
        * The redundant looking comment below is a hint to
        * gcc that it is ok to fall through. */
+      [[fallthrough]];
     }
-      /* fall through */
 
     default:
       throw std::domain_error("invalid clockspec");

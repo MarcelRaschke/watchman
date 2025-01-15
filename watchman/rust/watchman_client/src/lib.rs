@@ -22,18 +22,18 @@
 //! use watchman_client::prelude::*;
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!   let mut client = Connector::new().connect().await?;
-//!   let resolved = client
-//!      .resolve_root(CanonicalPath::canonicalize(".")?)
-//!      .await?;
+//!     let mut client = Connector::new().connect().await?;
+//!     let resolved = client
+//!         .resolve_root(CanonicalPath::canonicalize(".")?)
+//!         .await?;
 //!
-//!   // Basic globs -> names
-//!   let files = client.glob(&resolved, &["**/*.rs"]).await?;
-//!   println!("files: {:#?}", files);
-//!   Ok(())
+//!     // Basic globs -> names
+//!     let files = client.glob(&resolved, &["**/*.rs"]).await?;
+//!     println!("files: {:#?}", files);
+//!     Ok(())
 //! }
 //! ```
-#![deny(warnings)]
+#![cfg_attr(fbcode_build, deny(warnings))]
 
 pub mod expr;
 pub mod fields;
@@ -56,7 +56,7 @@ use futures::future::FutureExt;
 use futures::stream::StreamExt;
 use serde_bser::de::Bunser;
 use serde_bser::de::SliceRead;
-use serde_bser::value::Value;
+pub use serde_bser::value::Value;
 use thiserror::Error;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -220,11 +220,10 @@ impl Connector {
             let watchman_path = self
                 .watchman_cli_path
                 .as_ref()
-                .map(|p| p.as_ref())
-                .unwrap_or_else(|| Path::new("watchman"));
+                .map_or_else(|| Path::new("watchman"), |p| p.as_ref());
 
             let mut cmd = Command::new(watchman_path);
-            cmd.args(&["--output-encoding", "bser-v2", "get-sockname"]);
+            cmd.args(["--output-encoding", "bser-v2", "get-sockname"]);
 
             #[cfg(windows)]
             cmd.creation_flags(winapi::um::winbase::CREATE_NO_WINDOW);
@@ -587,6 +586,7 @@ impl ClientTask {
         use serde::Deserialize;
         #[derive(Deserialize, Debug)]
         pub struct Unilateral {
+            #[allow(unused)]
             pub unilateral: bool,
             pub subscription: String,
             #[serde(default)]
@@ -630,7 +630,7 @@ fn bunser<T>(buf: &[u8]) -> Result<T, Error>
 where
     T: serde::de::DeserializeOwned,
 {
-    let response: T = serde_bser::from_slice(&buf).map_err(|source| Error::Deserialize {
+    let response: T = serde_bser::from_slice(buf).map_err(|source| Error::Deserialize {
         source: source.into(),
         data: buf.to_vec(),
     })?;
@@ -957,8 +957,8 @@ impl Client {
     /// [NameOnly](struct.NameOnly.html) struct.
     ///
     /// ```
-    /// use watchman_client::prelude::*;
     /// use serde::Deserialize;
+    /// use watchman_client::prelude::*;
     ///
     /// query_result_type! {
     ///     struct NameAndType {
@@ -968,20 +968,20 @@ impl Client {
     /// }
     ///
     /// async fn query(
-    ///    client: &mut Client,
-    ///    resolved: &ResolvedRoot
+    ///     client: &mut Client,
+    ///     resolved: &ResolvedRoot,
     /// ) -> Result<(), Box<dyn std::error::Error>> {
-    ///    let response: QueryResult<NameAndType> = client
-    ///        .query(
-    ///            &resolved,
-    ///               QueryRequestCommon {
-    ///                glob: Some(vec!["**/*.rs".to_string()]),
-    ///                ..Default::default()
-    ///            },
-    ///        )
-    ///        .await?;
-    ///    println!("response: {:#?}", response);
-    ///    Ok(())
+    ///     let response: QueryResult<NameAndType> = client
+    ///         .query(
+    ///             &resolved,
+    ///             QueryRequestCommon {
+    ///                 glob: Some(vec!["**/*.rs".to_string()]),
+    ///                 ..Default::default()
+    ///             },
+    ///         )
+    ///         .await?;
+    ///     println!("response: {:#?}", response);
+    ///     Ok(())
     /// }
     /// ```
     ///
@@ -1157,6 +1157,42 @@ impl Client {
             .await?;
         Ok(response.config)
     }
+
+    /// Registers a trigger.
+    pub async fn register_trigger(
+        &self,
+        root: &ResolvedRoot,
+        request: TriggerRequest,
+    ) -> Result<TriggerResponse, Error> {
+        let response: TriggerResponse = self
+            .generic_request(TriggerCommand("trigger", root.root.clone(), request))
+            .await?;
+        Ok(response)
+    }
+
+    /// Removes a registered trigger.
+    pub async fn remove_trigger(
+        &self,
+        root: &ResolvedRoot,
+        name: &str,
+    ) -> Result<TriggerDelResponse, Error> {
+        let response: TriggerDelResponse = self
+            .generic_request(TriggerDelCommand(
+                "trigger-del",
+                root.root.clone(),
+                name.into(),
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    /// Lists registered triggers.
+    pub async fn list_triggers(&self, root: &ResolvedRoot) -> Result<TriggerListResponse, Error> {
+        let response: TriggerListResponse = self
+            .generic_request(TriggerListCommand("trigger-list", root.root.clone()))
+            .await?;
+        Ok(response)
+    }
 }
 
 #[cfg(test)]
@@ -1191,7 +1227,7 @@ mod tests {
 
             let reader = StreamReader::new(stream::iter(chunks));
 
-            let decoded = FramedRead::new(reader, BserSplitter)
+            FramedRead::new(reader, BserSplitter)
                 .map_err(TaskError::from)
                 .and_then(|bytes| async move {
                     // We unwrap this since a) this is a test and b) serde_bser's errors aren't
@@ -1201,9 +1237,7 @@ mod tests {
                 })
                 .try_collect()
                 .await
-                .unwrap();
-
-            decoded
+                .unwrap()
         }
 
         let msgs = vec![

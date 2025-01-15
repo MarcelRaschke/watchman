@@ -7,18 +7,19 @@
 
 #pragma once
 
-#include <eden/common/utils/ProcessNameCache.h>
 #include <fmt/core.h>
 
 #include <chrono>
 #include <deque>
 #include <unordered_map>
 
+#include "eden/common/utils/ProcessInfoCache.h"
 #include "watchman/Clock.h"
 #include "watchman/CommandRegistry.h"
 #include "watchman/Logging.h"
 #include "watchman/PDU.h"
 #include "watchman/PerfSample.h"
+#include "watchman/telemetry/LogEvent.h"
 #include "watchman/watchman_stream.h"
 
 namespace watchman {
@@ -28,6 +29,7 @@ class Command;
 class Root;
 struct Query;
 struct QueryResult;
+struct ClientContext;
 
 class Client : public std::enable_shared_from_this<Client> {
  public:
@@ -39,6 +41,8 @@ class Client : public std::enable_shared_from_this<Client> {
 
   void enqueueResponse(json_ref resp);
   void enqueueResponse(UntypedResponse resp);
+
+  ClientContext getClientInfo() const;
 
   const uint64_t unique_id;
   std::unique_ptr<watchman_stream> stm;
@@ -55,6 +59,9 @@ class Client : public std::enable_shared_from_this<Client> {
   // The PerfSample wrapping the current command's execution. Only set by the
   // client thread.
   PerfSample* perf_sample = nullptr;
+  // The DispatchCommand wrapping the current command's execution. Only set by
+  // the client thread.
+  DispatchCommand* dispatch_command = nullptr;
 
   // Queue of things to send to the client.
   std::deque<json_ref> responses;
@@ -64,6 +71,9 @@ class Client : public std::enable_shared_from_this<Client> {
   std::shared_ptr<Publisher::Subscriber> errorSub;
 
  protected:
+  const pid_t peerPid_;
+  const facebook::eden::ProcessInfoHandle peerInfo_;
+
   void sendErrorResponse(std::string_view formatted);
 
   template <typename T, typename... Rest>
@@ -235,8 +245,6 @@ class UserClient final : public Client {
   void clientThread() noexcept;
 
   const std::chrono::system_clock::time_point since_;
-  const pid_t peerPid_;
-  const facebook::eden::ProcessNameHandle peerName_;
 
   ClientStatus status_;
 };

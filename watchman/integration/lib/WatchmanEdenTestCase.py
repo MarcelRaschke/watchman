@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 # no unicode literals
 
 import os
@@ -86,7 +88,7 @@ else:
             os.environ["CHGDISABLE"] = "1"
 
             # Start the EdenFS instance
-            self.eden.start()
+            self.eden.start(extra_args=["--enable_fault_injection"])
 
         def _restoreHome(self) -> None:
             assert self.save_home is not None

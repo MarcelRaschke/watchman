@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import os
 
@@ -35,7 +37,7 @@ class TestSizeExpr(WatchmanTestCase.WatchmanTestCase):
             ["lt", 3, ["empty"]],
         ]
 
-        for (op, operand, expect) in tests:
+        for op, operand, expect in tests:
             res = self.watchmanCommand(
                 "query", root, {"expression": ["size", op, operand], "fields": ["name"]}
             )

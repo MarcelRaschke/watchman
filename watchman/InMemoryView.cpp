@@ -459,7 +459,7 @@ InMemoryView::InMemoryView(
     : QueryableView{root_path, /*requiresCrawl=*/true},
       fileSystem_{fileSystem},
       config_(std::move(config)),
-      view_(folly::in_place, root_path),
+      view_(std::in_place, root_path),
       rootNumber_(next_root_number++),
       rootPath_(root_path),
       watcher_(std::move(watcher)),
@@ -510,9 +510,13 @@ ClockStamp InMemoryView::ageOutFile(
   return ageOutOtime;
 }
 
-void InMemoryView::ageOut(PerfSample& sample, std::chrono::seconds minAge) {
-  uint32_t num_aged_files = 0;
-  uint32_t num_walked = 0;
+void InMemoryView::ageOut(
+    int64_t& walked,
+    int64_t& files,
+    int64_t& dirs,
+    std::chrono::seconds minAge) {
+  files = 0;
+  walked = 0;
   std::unordered_set<w_string> dirs_to_erase;
 
   auto now = std::chrono::system_clock::now();
@@ -522,7 +526,7 @@ void InMemoryView::ageOut(PerfSample& sample, std::chrono::seconds minAge) {
   watchman_file* file = view->getLatestFile();
   watchman_file* prior = nullptr;
   while (file) {
-    ++num_walked;
+    ++walked;
     if (file->exists ||
         std::chrono::system_clock::from_time_t(file->otime.timestamp) + minAge >
             now) {
@@ -536,7 +540,7 @@ void InMemoryView::ageOut(PerfSample& sample, std::chrono::seconds minAge) {
     // Revise tick for fresh instance reporting
     lastAgeOutTick_ = std::max(lastAgeOutTick_, agedOtime.ticks);
 
-    num_aged_files++;
+    files++;
 
     // Go back to last good file node; we can't trust that the
     // value of file->next saved before age_out_file is a valid
@@ -552,15 +556,11 @@ void InMemoryView::ageOut(PerfSample& sample, std::chrono::seconds minAge) {
     }
   }
 
-  if (num_aged_files + dirs_to_erase.size()) {
-    logf(ERR, "aged {} files, {} dirs\n", num_aged_files, dirs_to_erase.size());
+  if (files + dirs_to_erase.size()) {
+    logf(ERR, "aged {} files, {} dirs\n", files, dirs_to_erase.size());
   }
-  sample.add_meta(
-      "age_out",
-      json_object(
-          {{"walked", json_integer(num_walked)},
-           {"files", json_integer(num_aged_files)},
-           {"dirs", json_integer(dirs_to_erase.size())}}));
+
+  dirs = dirs_to_erase.size();
 }
 
 void InMemoryView::timeGenerator(const Query* query, QueryContext* ctx) const {
@@ -937,7 +937,7 @@ void InMemoryView::startThreads(const std::shared_ptr<Root>& root) {
       self->notifyThread(root);
     } catch (const std::exception& e) {
       log(ERR, "Exception: ", e.what(), " cancel root\n");
-      root->cancel();
+      root->cancel(fmt::format("notifyThread failed: {}", e.what()));
     }
     log(DBG, "out of loop\n");
   });
@@ -954,18 +954,32 @@ void InMemoryView::startThreads(const std::shared_ptr<Root>& root) {
       self->ioThread(root);
     } catch (const std::exception& e) {
       log(ERR, "Exception: ", e.what(), " cancel root\n");
-      root->cancel();
+      root->cancel(fmt::format("ioThread failed: {}", e.what()));
     }
     log(DBG, "out of loop\n");
   });
   ioThreadInstance.detach();
 }
 
-void InMemoryView::stopThreads() {
-  logf(DBG, "signalThreads! {} {}\n", fmt::ptr(this), rootPath_);
+void InMemoryView::stopThreads(std::string_view reason) {
+  logf(
+      DBG,
+      "signalThreads! {} {} because ... {}\n",
+      fmt::ptr(this),
+      rootPath_,
+      reason);
   stopThreads_.store(true, std::memory_order_release);
   watcher_->stopThreads();
-  pendingFromWatcher_.lock()->ping();
+  {
+    auto pending = pendingFromWatcher_.lock();
+    // we need this to make sure that watch does not hang
+    for (auto& sync : pending->stealSyncs()) {
+      sync.setException(std::runtime_error(
+          fmt::format("Watch shutting down because ... {}", reason)));
+    }
+    pending->startRefusingSyncs(reason);
+    pending->ping();
+  }
 }
 
 void InMemoryView::wakeThreads() {
@@ -1056,7 +1070,7 @@ CookieSync::SyncResult InMemoryView::syncToNowCookies(
           // We may have already observed the removal via the notifythread,
           // but in some cases (eg: btrfs subvolume deletion) no notification
           // is received.
-          root->cancel();
+          root->cancel("root directory was removed or is inaccessible");
           throw std::runtime_error("root dir was removed or is inaccessible");
         } else {
           // The cookie dir was a VCS subdir and it got deleted.  Let's
@@ -1069,7 +1083,7 @@ CookieSync::SyncResult InMemoryView::syncToNowCookies(
         // directories, and syncToNow will only throw if no cookies were
         // created, ie: if all the nested watched directories are no longer
         // present and the root directory has been removed.
-        root->cancel();
+        root->cancel("root dir was removed or is inaccessible");
         throw std::runtime_error("root dir was removed or is inaccessible");
       }
     }
@@ -1224,9 +1238,9 @@ void InMemoryView::warmContentCache() {
             f->stat.mtime};
 
         log(DBG, "warmContentCache: lookup ", key.relativePath, "\n");
-        auto f = caches_.contentHashCache.get(key);
+        auto f_2 = caches_.contentHashCache.get(key);
         if (syncContentCacheWarming_) {
-          futures.emplace_back(std::move(f));
+          futures.emplace_back(std::move(f_2));
         }
         ++n;
       }

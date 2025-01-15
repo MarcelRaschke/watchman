@@ -7,11 +7,14 @@
 
 include "eden/fs/config/eden_config.thrift"
 include "fb303/thrift/fb303_core.thrift"
+include "thrift/annotation/thrift.thrift"
+include "thrift/annotation/cpp.thrift"
 
 namespace cpp2 facebook.eden
 namespace java com.facebook.eden.thrift
 namespace py facebook.eden
 namespace py3 eden.fs.service
+namespace hack edenfs.service
 
 /**
  * API style guide.
@@ -123,10 +126,11 @@ enum EdenErrorType {
 }
 
 exception EdenError {
+  @thrift.ExceptionMessage
   1: string message;
   2: optional i32 errorCode;
   3: EdenErrorType errorType;
-} (message = 'message')
+}
 
 exception NoValueForKeyError {
   1: string key;
@@ -167,11 +171,13 @@ struct DaemonInfo {
 */
 struct PrivHelperInfo {
   1: bool connected;
+  2: pid_t pid;
 }
 
 /**
  * The current running state of an EdenMount.
  */
+@cpp.EnumType{type = cpp.EnumUnderlyingType.U32}
 enum MountState {
   /**
    * The EdenMount object has been constructed but has not started
@@ -229,7 +235,7 @@ enum MountState {
    * before we have attempted to start the user-space filesystem mount.
    */
   INIT_ERROR = 9,
-} (cpp2.enum_type = 'uint32_t')
+}
 
 struct MountInfo {
   1: PathString mountPoint;
@@ -251,6 +257,11 @@ union SHA1Result {
 
 union Blake3Result {
   1: BinaryHash blake3;
+  2: EdenError error;
+}
+
+union DigestHashResult {
+  1: BinaryHash digestHash;
   2: EdenError error;
 }
 
@@ -306,6 +317,8 @@ enum FileAttributes {
   SHA1_HASH = 1,
   /**
    * Returns the size of a file. Returns an error for symlinks and directories.
+   * See DIGEST_SIZE if you would like to request the size of a file/directory
+   * that's stored in a Content Addressed Store (i.e. RE CAS).
    */
   FILE_SIZE = 2,
   /**
@@ -326,14 +339,44 @@ enum FileAttributes {
   OBJECT_ID = 8,
 
   /**
-   * Returns the BLAKE3 hash of a file. Returns an error for symlinks and directories,
-   * and non-regular files.
+   * Returns the BLAKE3 hash of a file. Returns an error for
+   * symlinks, directories, and non-regular files. Note: the digest_hash can be
+   * requested for directories as an alternative to blake3_hash.
    */
   BLAKE3_HASH = 16,
+
+  /**
+   * Returns the digest size of a given file or directory. This can be used
+   * together with DIGEST_HASH to determine the key that should be used to
+   * fetch a given file/directory from Content Addressed Stores (i.e. RE CAS).
+   * For directories, the size of the augmented manifest that represents the
+   * the directory is returned. For files, this field is the same as FILE_SIZE.
+   * Returns an error for any non-directory/non-file types (symlink, exe, etc).
+   */
+  DIGEST_SIZE = 32,
+
+  /**
+   * Returns the digest hash of a given file or directory. This can be used
+   * together with DIGEST_SIZE to determine the key that should be used to
+   * fetch a given file/directory from Content Addressed Stores (i.e. RE CAS).
+   * For files, this hash is just the blake3 hash of the given file. For
+   * directories, this hash is blake3 hash of all the directory's descendents.
+   */
+  DIGEST_HASH = 64,
 /* NEXT_ATTR = 2^x */
-} (cpp2.enum_type = 'uint64_t')
+}
 
 typedef unsigned64 RequestedAttributes
+
+/**
+ * Indicates whether getAttributesForFiles requests should include results for
+ * files, trees, or both.
+ */
+enum AttributesRequestScope {
+  TREES = 0,
+  FILES = 1,
+  TREES_AND_FILES = 2,
+}
 
 /**
  * Subset of attributes for a single file returned by getAttributesFromFiles()
@@ -389,6 +432,26 @@ union ObjectIdOrError {
   2: EdenError error;
 }
 
+union DigestSizeOrError {
+  // Similar to ObjectIdOrError, it's possible for `digest size` to be unset
+  // even if there is no error.
+  //
+  // Notably, no digest size will be returned if any child file or directory
+  // has been modified.
+  1: i64 digestSize;
+  2: EdenError error;
+}
+
+union DigestHashOrError {
+  // Similar to ObjectIdOrError, it's possible for `digest hash` to be unset
+  // even if there is no error.
+  //
+  // Notably, no digest hash will be returned if any child file or directory
+  // has been modified.
+  1: BinaryHash digestHash;
+  2: EdenError error;
+}
+
 /**
  * Subset of attributes for a single file returned by getAttributesFromFiles()
  *
@@ -402,6 +465,8 @@ struct FileAttributeDataV2 {
   3: optional SourceControlTypeOrError sourceControlType;
   4: optional ObjectIdOrError objectId;
   5: optional Blake3OrError blake3;
+  6: optional DigestSizeOrError digestSize;
+  7: optional DigestHashOrError digestHash;
 }
 
 /**
@@ -421,9 +486,7 @@ union FileAttributeDataOrErrorV2 {
  * in a certain directory.
  */
 union DirListAttributeDataOrError {
-  1: map<PathString, FileAttributeDataOrErrorV2> (
-    rust.type = "sorted_vector_map::SortedVectorMap",
-  ) dirListAttributeData;
+  1: map_PathString_FileAttributeDataOrErrorV2_3516 dirListAttributeData;
   2: EdenError error;
 }
 
@@ -456,13 +519,16 @@ struct SyncBehavior {
 }
 
 /**
- * Parameters for the getAttributesFromFiles() function
+ * Parameters for the getAttributesFromFiles() function. By default, results
+ * for both files and trees will be returned. Clients can request for only one
+ * of trees or files by passing in an AttributesRequestScope.
  */
 struct GetAttributesFromFilesParams {
   1: PathString mountPoint;
   2: list<PathString> paths;
   3: RequestedAttributes requestedAttributes;
   4: SyncBehavior sync;
+  5: optional AttributesRequestScope scope;
 }
 
 /**
@@ -822,7 +888,7 @@ enum DataFetchOrigin {
   LOCAL_BACKING_STORE = 8,
   REMOTE_BACKING_STORE = 16,
 /* NEXT_WHERE = 2^x */
-} (cpp2.enum_type = 'uint64_t')
+}
 
 struct DebugGetScmBlobRequest {
   1: MountId mountId;
@@ -870,6 +936,30 @@ struct BlobMetadataWithOrigin {
 
 struct DebugGetBlobMetadataResponse {
   1: list<BlobMetadataWithOrigin> metadatas;
+}
+
+struct DebugGetScmTreeRequest {
+  1: MountId mountId;
+  # id of the blob we would like to fetch SCM tree for
+  2: ThriftObjectId id;
+  # where we should fetch the blob SCM tree from
+  3: DataFetchOriginSet origins; # DataFetchOrigin
+}
+
+union ScmTreeOrError {
+  1: list<ScmTreeEntry> treeEntries;
+  2: EdenError error;
+}
+
+struct ScmTreeWithOrigin {
+  # the SCM tree data
+  1: ScmTreeOrError scmTreeData;
+  # where the SCM tree was fetched from
+  2: DataFetchOrigin origin;
+}
+
+struct DebugGetScmTreeResponse {
+  1: list<ScmTreeWithOrigin> trees;
 }
 
 struct ActivityRecorderResult {
@@ -1021,6 +1111,11 @@ struct RequestInfo {
   2: optional string processName;
 }
 
+struct ClientRequestInfo {
+  1: string correlator;
+  2: string entry_point;
+}
+
 enum HgEventType {
   UNKNOWN = 0,
   QUEUE = 1,
@@ -1033,6 +1128,7 @@ enum HgResourceType {
   BLOB = 1,
   TREE = 2,
   BLOBMETA = 3,
+  TREEMETA = 4,
 }
 
 enum HgImportPriority {
@@ -1046,6 +1142,20 @@ enum HgImportCause {
   FS = 1,
   THRIFT = 2,
   PREFETCH = 3,
+}
+
+enum FetchedSource {
+  LOCAL = 0,
+  REMOTE = 1,
+  // The data is fetched. However, the fetch mode was AllowRemote
+  // and on the Eden side the source of the fetch is unknown.
+  // It could be local or remote
+  UNKNOWN = 2,
+  // The data is not fetched yet.
+  // We don't know the source on some of the Sapling events. For example,
+  // on the start events: before we fetch the data we don't know where
+  // we will be able to find it
+  NOT_AVAILABLE_YET = 3,
 }
 
 struct HgEvent {
@@ -1063,6 +1173,7 @@ struct HgEvent {
   7: optional RequestInfo requestInfo;
   8: HgImportPriority importPriority;
   9: HgImportCause importCause;
+  10: FetchedSource fetchedSource;
 }
 
 /**
@@ -1293,6 +1404,13 @@ struct PrefetchParams {
   // When set, the globs list must be empty and the globbing pattern will be obtained
   // from an online service.
   7: optional PredictiveFetch predictiveGlob;
+  // When true, returns list of prefetched files.
+  8: bool returnPrefetchedFiles = false;
+}
+
+/** Result for prefetchFiles(). */
+struct PrefetchResult {
+  1: optional Glob prefetchedFiles;
 }
 
 /** Params for globFiles(). */
@@ -1440,6 +1558,20 @@ struct GetScmStatusResult {
   2: string version;
 }
 
+/**
+ * Sometimes additional modifiers need to be applied to the RootID that Eden
+ * receives from clients. This structure contains any such option and should
+ * only be extended with optional fields.
+ */
+struct RootIdOptions {
+  /**
+   * The ID of the filter that should be applied to the supplied RootId. The
+   * filter determines which entries in the repository should be hidden from
+   * the working copy.
+   */
+  1: optional string filterId;
+}
+
 struct GetScmStatusParams {
   /**
    * The Eden checkout to query
@@ -1463,6 +1595,11 @@ struct GetScmStatusParams {
    * directory) will never be reported even when listIgnored is true.
    */
   3: bool listIgnored = false;
+
+  // Pass unique identifier of this request's caller.
+  4: optional ClientRequestInfo cri;
+
+  5: optional RootIdOptions rootIdOptions;
 }
 
 /**
@@ -1513,6 +1650,11 @@ struct CheckOutRevisionParams {
    * need to look it up.
    */
   1: optional BinaryHash hgRootManifest;
+
+  // Pass unique identifier of this request's caller.
+  2: optional ClientRequestInfo cri;
+
+  3: optional RootIdOptions rootIdOptions;
 }
 
 struct ResetParentCommitsParams {
@@ -1527,6 +1669,22 @@ struct ResetParentCommitsParams {
    * need to look it up.
    */
   1: optional BinaryHash hgRootManifest;
+
+  // Pass unique identifier of this request's caller.
+  2: optional ClientRequestInfo cri;
+
+  3: optional RootIdOptions rootIdOptions;
+}
+
+struct GetCurrentSnapshotInfoRequest {
+  // Mount for which you want information.
+  1: MountId mountId;
+  // Pass unique identifier of this request's caller.
+  2: optional ClientRequestInfo cri;
+}
+
+struct GetCurrentSnapshotInfoResponse {
+  1: optional string filterId;
 }
 
 struct RemoveRecursivelyParams {
@@ -1570,6 +1728,238 @@ struct ChangeOwnershipRequest {
 
 struct ChangeOwnershipResponse {}
 
+struct GetBlockedFaultsRequest {
+  1: string keyclass;
+}
+
+struct GetBlockedFaultsResponse {
+  1: list<string> keyValues;
+}
+
+struct CheckoutProgressInfo {
+  1: i64 updatedInodes;
+  2: i64 totalInodes;
+}
+
+struct CheckoutNotInProgress {}
+
+struct CheckoutProgressInfoRequest {
+  1: PathString mountPoint;
+}
+
+union CheckoutProgressInfoResponse {
+  1: CheckoutProgressInfo checkoutProgressInfo;
+  2: CheckoutNotInProgress noProgress;
+}
+
+/*
+ * Structs/Unions for changesSinceV2 API
+ */
+
+/*
+ * Small change notification returned when invoking changesSinceV2.
+ * Indicates that a new filesystem entry has been added to the
+ * given mount point since the provided journal position.
+ *
+ * fileType - Dtype of added filesystem entry.
+ * path - path (vector of bytes) of added filesystem entry.
+ */
+struct Added {
+  1: Dtype fileType;
+  3: PathString path;
+}
+
+/*
+ * Small change notification returned when invoking changesSinceV2.
+ * Indicates that an existing filesystem entry has been modified within
+ * the given mount point since the provided journal position.
+ *
+ * fileType - Dtype of modified filesystem entry.
+ * path - path (vector of bytes) of modified filesystem entry.
+ */
+struct Modified {
+  1: Dtype fileType;
+  3: PathString path;
+}
+
+/*
+ * Small change notification returned when invoking changesSinceV2.
+ * Indicates that an existing filesystem entry has been renamed within
+ * the given mount point since the provided journal position.
+ *
+ * fileType - Dtype of renamed filesystem entry.
+ * from - path (vector of bytes) the filesystem entry was previously located at.
+ * to - path (vector of bytes) the filesystem entry was relocated to.
+ */
+struct Renamed {
+  1: Dtype fileType;
+  2: PathString from;
+  3: PathString to;
+}
+
+/*
+ * Small change notification returned when invoking changesSinceV2.
+ * Indicates that an existing filesystem entry has been replaced within
+ * the given mount point since the provided journal position.
+ *
+ * fileType - Dtype of replaced filesystem entry.
+ * from - path (vector of bytes) the filesystem entry was previously located at.
+ * to - path (vector of bytes) the filesystem entry was relocated over.
+ */
+struct Replaced {
+  1: Dtype fileType;
+  2: PathString from;
+  3: PathString to;
+}
+
+/*
+ * Small change notification returned when invoking changesSinceV2.
+ * Indicates that an existing filesystem entry has been removed from
+ * the given mount point since the provided journal position.
+ *
+ * fileType - Dtype of removed filesystem entry.
+ * path - path (vector of bytes) of removed filesystem entry.
+ */
+struct Removed {
+  1: Dtype fileType;
+  3: PathString path;
+}
+
+/*
+ * Change notification returned when invoking changesSinceV2.
+ * Indicates that the given change is small in impact - affecting
+ * one or two filesystem entries at most.
+ */
+union SmallChangeNotification {
+  1: Added added;
+  2: Modified modified;
+  3: Renamed renamed;
+  4: Replaced replaced;
+  5: Removed removed;
+}
+
+/*
+ * Large change notification returned when invoking changesSinceV2.
+ * Indicates that an existing directory has been renamed within
+ * the given mount point since the provided journal position.
+ */
+struct DirectoryRenamed {
+  1: PathString from;
+  2: PathString to;
+}
+
+/*
+ * Large change notification returned when invoking changesSinceV2.
+ * Indicates that a commit transition has occurred within the
+ * given mount point since the provided journal position.
+ */
+struct CommitTransition {
+  1: ThriftRootId from;
+  2: ThriftRootId to;
+}
+
+/*
+ * Large change notification returned when invoking changesSinceV2.
+ * Indicates that EdenfS was unable to track changes within the given
+ * mount point since the provided journal poistion. Callers should
+ * treat all filesystem entries as changed.
+ */
+enum LostChangesReason {
+  // Unknown reason.
+  UNKNOWN = 0,
+  // The given mount point was remounted (or EdenFS was restarted).
+  EDENFS_REMOUNTED = 1,
+  // EdenFS' journal was truncated.
+  JOURNAL_TRUNCATED = 2,
+  // There were too many change notifications to report to the caller.
+  TOO_MANY_CHANGES = 3,
+}
+
+/*
+ * Large change notification returned when invoking changesSinceV2.
+ * Indicates that EdenFS was unable to provide the changes to the caller.
+ */
+struct LostChanges {
+  1: LostChangesReason reason;
+}
+
+/*
+ * Change notification returned when invoking changesSinceV2.
+ * Indicates that the given change is large in impact - affecting
+ * an unknown number of filesystem entries.
+ */
+union LargeChangeNotification {
+  1: DirectoryRenamed directoryRenamed;
+  2: CommitTransition commitTransition;
+  3: LostChanges lostChanges;
+}
+
+/*
+ * Changed returned when invoking changesSinceV2.
+ * Contains a change that occured within the given mount point
+ * since the provided journal position.
+ */
+union ChangeNotification {
+  1: SmallChangeNotification smallChange;
+  2: LargeChangeNotification largeChange;
+}
+
+/**
+ * Return value of the changesSinceV2 API
+ *
+ * toPosition - a new journal poistion that indicates the next change
+ *   that will occur in the future. Should be used in the next call to
+ *   changesSinceV2 go get the next list of changes.
+ *
+ * changes -  a list of all change notifications that have ocurred in
+ *   within the given mount point since the provided journal position.
+ */
+struct ChangesSinceV2Result {
+  1: JournalPosition toPosition;
+  2: list<ChangeNotification> changes;
+}
+
+/**
+ * Argument to changesSinceV2 API
+ *
+ * mountPoint - the EdenFS checkout to request changes about.
+ *
+ * fromPosition - the journal position used as the starting point to
+ *   request changes since. Typically, fromPosition is the set to the
+ *   toPostiion value returned in ChangesSinceV2Result. However, for
+ *   the initial invocation of changesSinceV2, the caller can obtain
+ *   the current journal position by calling getCurrentJournalPosition.
+ *
+ * includeVCSRoots - optional flag indicating the VCS roots should be included
+ *   in the returned results. By default, VCS roots will be excluded from
+ *   results.
+ *
+ * includedRoots - optional list of roots to include in results. If not
+ *   provided or an empty list, all roots will be included in results.
+ *   Applied before roots are excluded - see excludedRoots.
+ *
+ * excludedRoots - optional ist of roots to exclude from results. If not
+ *   provided or an empty list, no roots will be excluded from results.
+ *   Applied after roots are included - see includedRoots.
+ *
+ * includedSuffixes - optional list of suffixes to include in results. If not
+ *   provided or an empty list, all suffixes will be included in results.
+ *   Applied before suffixes are excluded - see excludedSuffixes.
+ *
+ * excludedSuffixes - optional ist of suffixes to exclude from results. If not
+ *   provided or an empty list, no suffixes will be excluded from results.
+ *   Applied after suffixes are included - see includedSuffixes.
+ */
+struct ChangesSinceV2Params {
+  1: PathString mountPoint;
+  2: JournalPosition fromPosition;
+  3: optional bool includeVCSRoots;
+  4: optional list<PathString> includedRoots;
+  5: optional list<PathString> excludedRoots;
+  6: optional list<string> includedSuffixes;
+  7: optional list<string> excludedSuffixes;
+}
+
 service EdenService extends fb303_core.BaseService {
   list<MountInfo> listMounts() throws (1: EdenError ex);
   void mount(1: MountArgument info) throws (1: EdenError ex);
@@ -1607,6 +1997,16 @@ service EdenService extends fb303_core.BaseService {
   ) throws (1: EdenError ex);
 
   /**
+   * Given an Eden mount point returns progress for the checkOutRevision end
+   * point. When a checkout is not in progress it returns CheckoutNotInProgress
+   *
+   * It errors out when no valid mountPoint is provided.
+   */
+  CheckoutProgressInfoResponse getCheckoutProgressInfo(
+    1: CheckoutProgressInfoRequest params,
+  ) throws (1: EdenError ex);
+
+  /**
    * Reset the working directory's parent commits, without changing the working
    * directory contents.
    *
@@ -1616,6 +2016,15 @@ service EdenService extends fb303_core.BaseService {
     1: PathString mountPoint,
     2: WorkingDirectoryParents parents,
     3: ResetParentCommitsParams params,
+  ) throws (1: EdenError ex);
+
+  /**
+   * Gets information about the current snapshot (i.e. last checked out commit)
+   * Currently, we only expose thethe current filter for the working copy. If
+   * the working copy is not filtered then the returned filter will be none.
+   */
+  GetCurrentSnapshotInfoResponse getCurrentSnapshotInfo(
+    1: GetCurrentSnapshotInfoRequest params,
   ) throws (1: EdenError ex);
 
   /**
@@ -1678,6 +2087,25 @@ service EdenService extends fb303_core.BaseService {
    * these for more details.
    */
   list<Blake3Result> getBlake3(
+    1: PathString mountPoint,
+    2: list<PathString> paths,
+    3: SyncBehavior sync,
+  ) throws (1: EdenError ex);
+
+  /**
+   * For each path, returns an EdenError instead of the DIGEST_HASH if any of the
+   * following occur:
+   * - directory is materialized (directory or child is/was modified since the
+   *   last checkout operation).
+   * - path identifies a non-existent file.
+   * - path identifies something that is not an ordinary file or directory (e.g.,
+   *   symlink or socket).
+   *
+   * Note: may return stale data if synchronizeWorkingCopy isn't called, and if
+   * the SyncBehavior specify a 0 timeout. see the documentation for both of
+   * these for more details.
+   */
+  list<DigestHashResult> getDigestHash(
     1: PathString mountPoint,
     2: list<PathString> paths,
     3: SyncBehavior sync,
@@ -1798,9 +2226,10 @@ service EdenService extends fb303_core.BaseService {
    *
    * Unlike the getAttributesFromFiles endpoint, this does not assume that all
    * the inputs are regular files. This endpoint will attempt to return
-   * attributes for any type of file (directory included). Note that some
-   * attributes are not currently supported, like sha1 and size for directories
-   * and symlinks. At some point EdenFS may be able to support such attributes.
+   * attributes for any type of file (directory included) unless instructed
+   * otherwise. Note that some attributes are not currently supported, like
+   * sha1 and size for directories and symlinks. At some point EdenFS may be
+   * able to support such attributes.
    *
    * Note: may return stale data if synchronizeWorkingCopy isn't called, and if
    * the SyncBehavior specifies a 0 timeout. See the documentation for both of
@@ -1811,7 +2240,8 @@ service EdenService extends fb303_core.BaseService {
   ) throws (1: EdenError ex);
 
   /**
-   * DEPRECATED - prefer getAttributesFromFilesV2.
+   * DEPRECATED - prefer getAttributesFromFilesV2. Some parameters are not
+   * supported by this endpoint (namely the request scope param).
    *
    * Returns the requested file attributes for the provided list of files.
    *
@@ -1863,13 +2293,25 @@ service EdenService extends fb303_core.BaseService {
   Glob globFiles(1: GlobParams params) throws (1: EdenError ex);
 
   /**
+   * DEPRECATED: use prefetchFilesV2
+   *
    * Has the same behavior as globFiles, but should be called in the case of a prefetch.
    * This request could be deprioritized since it will be assumed that this call is used
    * for optimization and the result not relied on for operations. This command does not
    * return the list of prefetched files.
    */
-  void prefetchFiles(1: PrefetchParams params) throws (1: EdenError ex) (
-    priority = 'BEST_EFFORT',
+  @thrift.Priority{level = thrift.RpcPriority.BEST_EFFORT}
+  void prefetchFiles(1: PrefetchParams params) throws (1: EdenError ex);
+
+  /**
+   * Has the same behavior as globFiles, but should be called in the case of a prefetch.
+   * This call is used when prefetching instead of globbing, to allow for different behaviors.
+   * This command returns a PrefetchResult, which contains the list of prefetched files.
+   * If returnPrefetchedFiles is true, this command will return the prefetched files.
+   */
+  @thrift.Priority{level = thrift.RpcPriority.BEST_EFFORT}
+  PrefetchResult prefetchFilesV2(1: PrefetchParams params) throws (
+    1: EdenError ex,
   );
 
   /**
@@ -1957,7 +2399,8 @@ service EdenService extends fb303_core.BaseService {
    * Returns information about the running process, including pid and command
    * line.
    */
-  DaemonInfo getDaemonInfo() throws (1: EdenError ex) (priority = 'IMPORTANT');
+  @thrift.Priority{level = thrift.RpcPriority.IMPORTANT}
+  DaemonInfo getDaemonInfo() throws (1: EdenError ex);
 
   /**
   * Returns information about the privhelper process, including accesibility.
@@ -1993,6 +2436,9 @@ service EdenService extends fb303_core.BaseService {
   //////// Debugging APIs ////////
 
   /**
+   * DEPRECATED: Use debugGetTree().
+   * TODO: remove this API after 07/01/2024
+   *
    * Get the contents of a source control Tree.
    *
    * This can be used to confirm if eden's LocalStore contains information
@@ -2007,6 +2453,10 @@ service EdenService extends fb303_core.BaseService {
     1: PathString mountPoint,
     2: ThriftObjectId id,
     3: bool localStoreOnly,
+  ) throws (1: EdenError ex);
+
+  DebugGetScmTreeResponse debugGetTree(
+    1: DebugGetScmTreeRequest request,
   ) throws (1: EdenError ex);
 
   /**
@@ -2095,6 +2545,11 @@ service EdenService extends fb303_core.BaseService {
    * Get the list of outstanding Thrift requests
    */
   list<ThriftRequestMetadata> debugOutstandingThriftRequests();
+
+  /**
+   * Get the list of outstanding file download events from source control servers
+   */
+  list<HgEvent> debugOutstandingHgEvents(1: PathString mountPoint);
 
   /**
    * Start recording performance metrics such as files read
@@ -2268,8 +2723,8 @@ service EdenService extends fb303_core.BaseService {
   );
 
   /**
-   * Gets a list of hg events stored in Eden's Hg ActivityBuffer. Used for
-   * retroactive debugging by the `eden trace hg --retroactive` command.
+   * Gets a list of Sapling events stored in Eden's Sapling ActivityBuffer. Used for
+   * retroactive debugging by the `eden trace sl --retroactive` command.
    */
   GetRetroactiveHgEventsResult getRetroactiveHgEvents(
     1: GetRetroactiveHgEventsParams params,
@@ -2307,6 +2762,10 @@ service EdenService extends fb303_core.BaseService {
    */
   i64 unblockFault(1: UnblockFaultArg info) throws (1: EdenError ex);
 
+  GetBlockedFaultsResponse getBlockedFaults(
+    1: GetBlockedFaultsRequest request,
+  ) throws (1: EdenError ex);
+
   /**
    * Directly load a BackingStore object identified by id at the given path.
    *
@@ -2337,4 +2796,24 @@ service EdenService extends fb303_core.BaseService {
   void ensureMaterialized(1: EnsureMaterializedParams params) throws (
     1: EdenError ex,
   );
+
+  /**
+   * Returns a list of change notifications along with a new journal position for a given mount
+   * point since a provided journal position.
+   *
+   * This does not resolve expensive operations like moving a directory or changing
+   * commits. Callers must query Sapling to evaluate those potentially expensive operations.
+   */
+  ChangesSinceV2Result changesSinceV2(1: ChangesSinceV2Params params) throws (
+    1: EdenError ex,
+  );
 }
+
+// The following were automatically generated and may benefit from renaming.
+@thrift.DeprecatedUnvalidatedAnnotations{
+  items = {"rust.type": "sorted_vector_map::SortedVectorMap"},
+}
+typedef map<
+  PathString,
+  FileAttributeDataOrErrorV2
+> map_PathString_FileAttributeDataOrErrorV2_3516

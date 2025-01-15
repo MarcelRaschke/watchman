@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import errno
 import functools
@@ -81,11 +83,14 @@ class TempDirPerTestMixin(unittest.TestCase):
         return name
 
 
-# pyre-ignore[13]: `WatchmanTestCase` has no attribute `transport`.
 class WatchmanTestCase(TempDirPerTestMixin, unittest.TestCase):
+    # pyre-fixme[13]: Attribute `transport` is never initialized.
     transport: str
+    # pyre-fixme[13]: Attribute `encoding` is never initialized.
     encoding: str
+    # pyre-fixme[13]: Attribute `parallelCrawl` is never initialized.
     parallelCrawl: bool
+    # pyre-fixme[13]: Attribute `splitWatcher` is never initialized.
     splitWatcher: bool
 
     def __init__(self, methodName: str = "run") -> None:
@@ -575,7 +580,7 @@ def expand_matrix(test_class) -> None:
         except unittest.SkipTest:
             pass
 
-    for (transport, encoding, parallel, split, suffix) in matrix:
+    for transport, encoding, parallel, split, suffix in matrix:
         make_class(transport, encoding, suffix, parallel == "parallel", split)
 
     return None

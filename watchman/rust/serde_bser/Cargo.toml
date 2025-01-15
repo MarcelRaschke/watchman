@@ -1,12 +1,12 @@
 [package]
 name = "serde_bser"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Rain <rain1@fb.com>", "Wez Furlong"]
 edition = "2021"
 description = "Implements the Watchman BSER encoding for serde. https://facebook.github.io/watchman/docs/bser.html"
 documentation = "https://docs.rs/serde_bser"
 repository = "https://github.com/facebook/watchman/"
-license = "Apache-2.0"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0"
@@ -22,3 +22,6 @@ maplit = "1.0"
 [features]
 debug_bytes = []
 default = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"] }

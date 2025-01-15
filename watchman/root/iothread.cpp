@@ -7,11 +7,15 @@
 
 #include <fmt/chrono.h>
 #include <chrono>
+
 #include "watchman/Errors.h"
 #include "watchman/InMemoryView.h"
+#include "watchman/PerfSample.h"
 #include "watchman/fs/ParallelWalk.h"
 #include "watchman/root/Root.h"
 #include "watchman/root/warnerr.h"
+#include "watchman/telemetry/LogEvent.h"
+#include "watchman/telemetry/WatchmanStructuredLogger.h"
 #include "watchman/watcher/Watcher.h"
 #include "watchman/watchman_dir.h"
 #include "watchman/watchman_file.h"
@@ -79,11 +83,18 @@ void InMemoryView::fullCrawl(
 
   root->cookies.abortAllCookies();
 
-  root->addPerfSampleMetadata(sample);
-
+  auto root_metadata = root->getRootMetadata();
+  sample.add_root_metadata(root_metadata);
   sample.finish();
   sample.force_log();
   sample.log();
+
+  FullCrawl fullCrawl;
+  fullCrawl.root = root_metadata.root_path.string();
+  fullCrawl.recrawl = root_metadata.recrawl_count;
+  fullCrawl.case_sensitive = root_metadata.case_sensitive;
+  fullCrawl.watcher = root_metadata.watcher.string();
+  getLogger()->logEvent(fullCrawl);
 
   logf(ERR, "{}crawl complete\n", recrawlCount ? "re" : "");
 }
@@ -104,7 +115,7 @@ InMemoryView::Continue InMemoryView::doSettleThings(
   root.unilateralResponses->enqueue(json_object({{"settled", json_true()}}));
 
   if (root.considerReap()) {
-    root.stopWatch();
+    root.stopWatch("Watch was idle for too long");
     return Continue::Stop;
   }
 
@@ -161,7 +172,13 @@ std::chrono::milliseconds getBiggestTimeout(const Root& root) {
 void InMemoryView::ioThread(const std::shared_ptr<Root>& root) {
   IoThreadState state{getBiggestTimeout(*root)};
   state.currentTimeout = root->trigger_settle;
-
+  // Injects a temporary blocks, only in test code. This is to
+  // force the iothread to loose a race with the notify thread.
+  // TODO: Support something like EdenFS FaultInjector so that we can do
+  // something less hacky.
+  if (config_.getBool("inject_block_in_io_thread_start", false)) {
+    sleep(10);
+  }
   while (Continue::Continue == stepIoThread(root, state, pendingFromWatcher_)) {
   }
 }
@@ -1000,7 +1017,7 @@ void InMemoryView::statPath(
     watcher_->startWatchFile(file);
 
     if (st.isDir()) {
-      if (dir_ent == NULL) {
+      if (dir_ent == nullptr) {
         recursive = true;
       } else {
         // Ensure that we believe that this node exists

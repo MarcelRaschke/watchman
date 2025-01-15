@@ -30,6 +30,18 @@ class ExistsExpr : public QueryExpr {
     // `exists` doesn't constrain the path.
     return std::nullopt;
   }
+
+  ReturnOnlyFiles listOnlyFiles() const override {
+    return ReturnOnlyFiles::Unrelated;
+  }
+
+  SimpleSuffixType evaluateSimpleSuffix() const override {
+    return SimpleSuffixType::Excluded;
+  }
+
+  std::vector<std::string> getSuffixQueryGlobPatterns() const override {
+    return std::vector<std::string>{};
+  }
 };
 W_TERM_PARSER(exists, ExistsExpr::parse);
 
@@ -70,6 +82,18 @@ class EmptyExpr : public QueryExpr {
       CaseSensitivity) const override {
     // `empty` doesn't constrain the path.
     return std::nullopt;
+  }
+
+  ReturnOnlyFiles listOnlyFiles() const override {
+    return ReturnOnlyFiles::Unrelated;
+  }
+
+  SimpleSuffixType evaluateSimpleSuffix() const override {
+    return SimpleSuffixType::Excluded;
+  }
+
+  std::vector<std::string> getSuffixQueryGlobPatterns() const override {
+    return std::vector<std::string>{};
   }
 };
 W_TERM_PARSER(empty, EmptyExpr::parse);

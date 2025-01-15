@@ -13,6 +13,7 @@
 #include <folly/String.h>
 #include <folly/init/Init.h>
 #include <folly/net/NetworkSocket.h>
+#include <folly/portability/Fcntl.h>
 #include <folly/system/Shell.h>
 
 #include <stdio.h>
@@ -29,6 +30,7 @@
 #include "watchman/PDU.h"
 #include "watchman/PerfSample.h"
 #include "watchman/ProcessLock.h"
+#include "watchman/ProcessUtil.h"
 #include "watchman/ThreadPool.h"
 #include "watchman/UserDir.h"
 #include "watchman/WatchmanConfig.h"
@@ -107,7 +109,27 @@ void detect_low_process_priority() {
 #endif
 }
 
-[[noreturn]] static void run_service(ProcessLock::Handle&&) {
+/*
+ * Detect the command that starts watchman
+ */
+std::optional<std::string> detect_starting_command(pid_t ppid) {
+#ifndef _WIN32
+  try {
+    auto processInfo = lookupProcessInfo(ppid).get();
+    return processInfo.name;
+  } catch (const std::exception& e) {
+    logf(
+        ERR,
+        "Failed to lookup process info for pid {} exception {} \n",
+        ppid,
+        e.what());
+  }
+
+#endif
+  return std::nullopt;
+}
+
+[[noreturn]] static void run_service(ProcessLock::Handle&&, pid_t ppid) {
 #ifndef _WIN32
   // Before we redirect stdin/stdout to the log files, move any inetd-provided
   // socket to a different descriptor number.
@@ -117,18 +139,19 @@ void detect_low_process_priority() {
 #endif
 
   // redirect std{in,out,err}
-  int fd = ::open("/dev/null", O_RDONLY);
+  int fd = folly::fileops::open("/dev/null", O_RDONLY);
   if (fd != -1) {
     ignore_result(::dup2(fd, STDIN_FILENO));
-    ::close(fd);
+    folly::fileops::close(fd);
   }
 
   if (logging::log_name != "-") {
-    fd = open(logging::log_name.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0600);
+    fd = folly::fileops::open(
+        logging::log_name.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0600);
     if (fd != -1) {
       ignore_result(::dup2(fd, STDOUT_FILENO));
       ignore_result(::dup2(fd, STDERR_FILENO));
-      ::close(fd);
+      folly::fileops::close(fd);
     }
   }
 
@@ -149,16 +172,18 @@ void detect_low_process_priority() {
     char hostname[256];
     gethostname(hostname, sizeof(hostname));
     hostname[sizeof(hostname) - 1] = '\0';
+    auto startingCommandName = detect_starting_command(ppid);
     logf(
         ERR,
-        "Watchman {} {} starting up on {}\n",
+        "Watchman {} {} starting up on {} by command {}\n",
         PACKAGE_VERSION,
 #ifdef WATCHMAN_BUILD_INFO
         WATCHMAN_BUILD_INFO,
 #else
         "<no build info set>",
 #endif
-        hostname);
+        hostname,
+        startingCommandName.value_or("<unknown_command>"));
   }
 
 #ifndef _WIN32
@@ -171,7 +196,7 @@ void detect_low_process_priority() {
 
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &sigset, NULL);
+    sigprocmask(SIG_BLOCK, &sigset, nullptr);
   }
 #endif
 
@@ -236,7 +261,7 @@ static void close_random_fds() {
   }
 
   for (max_fd = open_max; max_fd > STDERR_FILENO; --max_fd) {
-    close(max_fd);
+    folly::fileops::close(max_fd);
   }
 #endif
 }
@@ -247,7 +272,7 @@ static void close_random_fds() {
 
   auto& pid_file = get_pid_file();
   auto processLock = ProcessLock::acquire(pid_file);
-  run_service(processLock.writePid(pid_file));
+  run_service(processLock.writePid(pid_file), getppid());
 }
 
 namespace {
@@ -296,6 +321,7 @@ static SpawnResult run_service_as_daemon() {
   }
 
   auto& processLock = std::get<ProcessLock>(acquireResult);
+  auto parentPid = getppid();
 
   // the double-fork-and-setsid trick establishes a
   // child process that runs in its own process group
@@ -319,18 +345,18 @@ static SpawnResult run_service_as_daemon() {
 
   // We are the child. Let's populate the pid file and start listening on the
   // socket.
-  run_service(processLock.writePid(get_pid_file()));
+  run_service(processLock.writePid(get_pid_file()), parentPid);
 }
 #endif
 
 #ifdef _WIN32
 static SpawnResult spawn_win32(const std::vector<std::string>& daemon_argv) {
   char module_name[WATCHMAN_NAME_MAX];
-  GetModuleFileName(NULL, module_name, sizeof(module_name));
+  GetModuleFileName(nullptr, module_name, sizeof(module_name));
 
   ChildProcess::Options opts;
   opts.setFlags(POSIX_SPAWN_SETPGROUP);
-  opts.open(STDIN_FILENO, "/dev/null", O_RDONLY, 0666);
+  opts.nullStdin();
   opts.open(
       STDOUT_FILENO,
       logging::log_name.c_str(),
@@ -858,7 +884,7 @@ static bool try_client_mode_command(const Command& command, bool pretty) {
         client->responses.front(),
         stdout,
         pretty ? JSON_INDENT(4) : JSON_COMPACT);
-    printf("\n");
+    fmt::print("\n");
   }
 
   return res;

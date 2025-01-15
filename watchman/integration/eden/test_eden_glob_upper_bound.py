@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import json
 import re
@@ -135,8 +137,10 @@ class TestEdenGlobUpperBound(WatchmanEdenTestCase.WatchmanEdenTestCase):
             ["mixedCASE/file1", "MIXEDcase/file2"],
         )
         self.assertGlobUpperBound(
-            # We can't bound this query with a glob on a case-sensitive FS.
-            (None if self.isCaseSensitiveMount(root) else {"mixedcase/**"})
+            (
+                # We can't bound this query with a glob on a case-sensitive FS.
+                None if self.isCaseSensitiveMount(root) else {"mixedcase/**"}
+            )
         )
 
     def test_eden_since_upper_bound_includedotfiles(self) -> None:

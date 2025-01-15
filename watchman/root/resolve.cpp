@@ -7,6 +7,7 @@
 
 #include <fmt/core.h>
 #include <folly/String.h>
+#include <system_error>
 #include "watchman/Errors.h"
 #include "watchman/InMemoryView.h"
 #include "watchman/fs/FSDetect.h"
@@ -60,7 +61,7 @@ bool root_check_restrict(const char* watch_path) {
 }
 
 static void check_allowed_fs(const char* filename, const w_string& fs_type) {
-  const char* advice = NULL;
+  const char* advice = nullptr;
 
   // Report this to the log always, as it is helpful in understanding
   // problem reports
@@ -232,32 +233,45 @@ root_resolve(const char* filename_cstr, bool auto_watch, bool* created) {
         root_files_list);
   }
 
-  auto config_file = load_root_config(root_str.c_str());
-  Configuration config{config_file};
-  root = std::make_shared<Root>(
-      realFileSystem,
-      root_str,
-      fs_type,
-      config_file,
-      config,
-      WatcherRegistry::initWatcher(root_str, fs_type, config),
-      &w_state_save);
+  try {
+    auto config_file = load_root_config(root_str.c_str());
+    Configuration config{config_file};
+    root = std::make_shared<Root>(
+        realFileSystem,
+        root_str,
+        fs_type,
+        config_file,
+        config,
+        WatcherRegistry::initWatcher(root_str, fs_type, config),
+        &w_state_save);
 
-  {
-    auto wlock = watched_roots.wlock();
-    auto& map = *wlock;
-    auto& existing = map[root->root_path];
-    if (existing) {
-      // Someone beat us in this race
-      root = existing;
-      *created = false;
-    } else {
-      existing = root;
-      *created = true;
+    {
+      auto wlock = watched_roots.wlock();
+      auto& map = *wlock;
+      auto& existing = map[root->root_path];
+      if (existing) {
+        // Someone beat us in this race
+        root = existing;
+        *created = false;
+      } else {
+        existing = root;
+        *created = true;
+      }
     }
-  }
 
-  return root;
+    return root;
+  } catch (const std::system_error& exc) {
+    if (exc.code() == std::errc::not_connected) {
+      RootNotConnectedError::throwf(
+          "\"{}\" was able to be opened, but we were unable to read its "
+          "contents. If \"{}\" is located on a FUSE or network mount, "
+          "please ensure that you have mounted it correctly, including "
+          "validating any required credentials or certificates.\n",
+          filename,
+          filename);
+    }
+    throw;
+  }
 }
 
 std::shared_ptr<Root> w_root_resolve(const char* filename, bool auto_watch) {
@@ -269,7 +283,8 @@ std::shared_ptr<Root> w_root_resolve(const char* filename, bool auto_watch) {
       root->view()->startThreads(root);
     } catch (const std::exception& e) {
       log(ERR, "w_root_resolve, while calling startThreads: ", e.what());
-      root->cancel();
+      root->cancel(
+          fmt::format("Error starting threads for root: {}", e.what()));
       throw;
     }
     w_state_save();

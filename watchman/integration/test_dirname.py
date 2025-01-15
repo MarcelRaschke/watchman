@@ -4,6 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 
 import os
 
@@ -96,7 +98,7 @@ class TestDirName(WatchmanTestCase.WatchmanTestCase):
             ["1", 4, []],
         ]
 
-        for (dirname, depth, expect) in tests:
+        for dirname, depth, expect in tests:
             if depth is None:
                 # equivalent to `depth ge 0`
                 term = ["dirname", dirname]

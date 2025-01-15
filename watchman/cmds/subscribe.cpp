@@ -7,9 +7,11 @@
 
 #include <folly/MapUtil.h>
 #include "watchman/Client.h"
+#include "watchman/ClientContext.h"
 #include "watchman/Errors.h"
 #include "watchman/Logging.h"
 #include "watchman/MapUtil.h"
+#include "watchman/ProcessUtil.h"
 #include "watchman/QueryableView.h"
 #include "watchman/query/Query.h"
 #include "watchman/query/eval.h"
@@ -129,7 +131,8 @@ void ClientSubscription::processSubscription() {
           " got: ",
           exc.what(),
           ".  Cancel watch\n");
-      root->cancel();
+      root->cancel(
+          fmt::format("Error processing subscriptions: {}", exc.what()));
     } else {
       throw;
     }
@@ -380,7 +383,8 @@ static UntypedResponse cmd_flush_subscriptions(
     }
   }
 
-  root->syncToNow(std::chrono::milliseconds(sync_timeout));
+  root->syncToNow(
+      std::chrono::milliseconds(sync_timeout), client->getClientInfo());
 
   UntypedResponse resp;
   std::vector<json_ref> synced;
@@ -490,7 +494,11 @@ static UntypedResponse cmd_subscribe(Client* clientbase, const json_ref& args) {
   json_ref query_spec = args.at(3);
 
   auto query = parseQuery(root, query_spec);
-  query->clientPid = client->stm ? client->stm->getPeerProcessID() : 0;
+  auto clientPid = client->stm ? client->stm->getPeerProcessID() : 0;
+  query->clientInfo.clientPid = clientPid;
+  query->clientInfo.clientInfo = clientPid
+      ? std::make_optional(lookupProcessInfo(clientPid))
+      : std::nullopt;
   query->subscriptionName = json_to_w_string(jname);
 
   auto defer_list = query_spec.get_optional("defer");
